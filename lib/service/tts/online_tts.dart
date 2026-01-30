@@ -5,6 +5,7 @@ import 'package:anx_reader/page/reading_page.dart';
 import 'package:anx_reader/service/tts/base_tts.dart';
 import 'package:anx_reader/service/tts/online_tts_backend.dart';
 import 'package:anx_reader/service/tts/azure_tts_backend.dart';
+import 'package:anx_reader/service/tts/openai_tts_backend.dart';
 import 'package:anx_reader/service/tts/models/tts_segment.dart';
 import 'package:anx_reader/service/tts/models/tts_sentence.dart';
 import 'package:anx_reader/service/tts/models/tts_voice.dart';
@@ -22,9 +23,9 @@ class OnlineTts extends BaseTts {
   OnlineTts._internal();
 
   // ============ Configuration ============
-  static const int _bufferCapacity = 10;
-  static const int _batchSize = 5; // Max concurrent fetches
-  static const int _fetchTimeoutSeconds = 10;
+  static const int _bufferCapacity = 5; // Reduced buffer for slower TTS services
+  static const int _batchSize = 2; // Reduced concurrent fetches to avoid overloading TTS service
+  static const int _fetchTimeoutSeconds = 30; // Increased timeout for slower TTS services
   static const int _maxRetries = 2;
 
   // ============ Audio Player ============
@@ -62,6 +63,8 @@ class OnlineTts extends BaseTts {
     if (_currentBackend?.serviceId != serviceId) {
       if (serviceId == 'azure') {
         _currentBackend = AzureTtsBackend();
+      } else if (serviceId == 'openai') {
+        _currentBackend = OpenaiTtsBackend();
       } else {
         _currentBackend = AzureTtsBackend();
       }
@@ -371,6 +374,15 @@ class OnlineTts extends BaseTts {
   // ============ Public API ============
   @override
   Future<void> speak({String? content}) async {
+    // Stop any ongoing playback and clear buffer first
+    if (_isPlayerRunning || _isPrefetcherRunning) {
+      await stop();
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    
+    // Clear buffer to avoid playing residual content
+    _resetBuffer();
+    
     _shouldStop = false;
     updateTtsState(TtsStateEnum.playing);
 

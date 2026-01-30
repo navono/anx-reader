@@ -28,6 +28,20 @@ class _TtsWidgetState extends State<TtsWidget> {
   double stopSeconds = 0;
   Timer? stopTimer;
 
+  String _getTtsServiceName() {
+    final serviceId = Prefs().ttsService;
+    switch (serviceId) {
+      case 'system':
+        return L10n.of(context).ttsTypeSystem;
+      case 'azure':
+        return L10n.of(context).settingsNarrateAzureTts;
+      case 'openai':
+        return 'OpenAI TTS';
+      default:
+        return serviceId;
+    }
+  }
+
   @override
   void initState() {
     if (TtsHandler().ttsStateNotifier.value != TtsStateEnum.playing) {
@@ -75,52 +89,54 @@ class _TtsWidgetState extends State<TtsWidget> {
             );
           }
 
-          Widget pitch() {
-            return Row(
-              children: [
-                Text(L10n.of(context).ttsPitch),
-                Expanded(
-                  child: Slider(
-                    value: TtsHandler().pitch,
-                    onChanged: (newPitch) {
-                      setState(() {
-                        TtsHandler().pitch = newPitch;
-                      });
-                    },
-                    min: 0.5,
-                    max: 2.0,
-                    divisions: 15,
-                    label: TtsHandler().pitch.toStringAsFixed(1),
-                  ),
-                ),
-              ],
-            );
-          }
-
-          Widget rate() {
+          Widget sliders() {
+  Widget rate() {
+            // Hide rate slider for OpenAI TTS (not supported by API)
+            if (Prefs().ttsService == 'openai') {
+              return const SizedBox.shrink();
+            }
             return Row(
               children: [
                 Text(L10n.of(context).ttsRate),
                 Expanded(
                   child: Slider(
-                    value: TtsHandler().rate,
-                    onChanged: (newRate) {
-                      setState(() {
-                        TtsHandler().rate = newRate;
-                      });
-                    },
-                    min: 0.0,
-                    max: 2.0,
-                    divisions: 10,
-                    label: TtsHandler().rate.toStringAsFixed(1),
-                  ),
+                      value: TtsHandler().rate,
+                      onChanged: (newRate) {
+                        setState(() {
+                          TtsHandler().rate = newRate;
+                        });
+                      },
+                      min: 0.0,
+                      max: 2.0,
+                      divisions: 10,
+                      label: TtsHandler().rate.toStringAsFixed(1)),
                 ),
               ],
             );
-          }
-
-          Widget sliders() {
-            return Padding(
+          }  Widget pitch() {
+            // Hide pitch slider for OpenAI TTS (not supported by API)
+            if (Prefs().ttsService == 'openai') {
+              return const SizedBox.shrink();
+            }
+            return Row(
+              children: [
+                Text(L10n.of(context).ttsPitch),
+                Expanded(
+                  child: Slider(
+                      value: TtsHandler().pitch,
+                      onChanged: (newPitch) {
+                        setState(() {
+                          TtsHandler().pitch = newPitch;
+                        });
+                      },
+                      min: 0.5,
+                      max: 2.0,
+                      divisions: 15,
+                      label: TtsHandler().pitch.toStringAsFixed(1)),
+                ),
+              ],
+            );
+          }            return Padding(
               padding: const EdgeInsets.fromLTRB(20, 5, 20, 0),
               child: Column(
                 children: [
@@ -153,9 +169,7 @@ class _TtsWidgetState extends State<TtsWidget> {
                         child: Row(
                           children: [
                             Text(
-                              Prefs().ttsService == 'system'
-                                  ? L10n.of(context).ttsTypeSystem
-                                  : 'Microsoft Azure', // Or map generic ID to name
+                              _getTtsServiceName(),
                               style: TextStyle(
                                 color: Theme.of(context).colorScheme.primary,
                                 fontWeight: FontWeight.bold,

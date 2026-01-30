@@ -2,6 +2,7 @@ import 'package:anx_reader/config/shared_preference_provider.dart';
 import 'package:anx_reader/l10n/generated/L10n.dart';
 import 'package:anx_reader/providers/tts_providers.dart';
 import 'package:anx_reader/service/tts/azure_tts_backend.dart';
+import 'package:anx_reader/service/tts/openai_tts_backend.dart';
 import 'package:anx_reader/service/tts/models/tts_voice.dart';
 import 'package:anx_reader/service/tts/online_tts.dart';
 import 'package:anx_reader/service/tts/online_tts_backend.dart';
@@ -58,13 +59,24 @@ class _NarrateSettingsState extends ConsumerState<NarrateSettings>
     }
 
     try {
+      if (text.isEmpty) {
+        throw Exception('Test text is empty');
+      }
+      
       final tts = TtsFactory().current;
       await tts.stop();
+      
       if (tts is OnlineTts) {
         if (voiceShortName != null) {
           await tts.speakWithVoice(text, voiceShortName);
         } else {
-          await tts.speak(content: text);
+          // For main button, use configured voice or show error
+          final configuredVoice = Prefs().ttsVoiceModel;
+          if (configuredVoice != null && configuredVoice.isNotEmpty) {
+            await tts.speakWithVoice(text, configuredVoice);
+          } else {
+            throw Exception('No voice selected. Please select a voice first.');
+          }
         }
       } else if (tts is SystemTts) {
         if (voiceShortName != null) {
@@ -74,8 +86,16 @@ class _NarrateSettingsState extends ConsumerState<NarrateSettings>
         }
       }
     } catch (e) {
-      // Handle error (maybe show toast)
       print('Test speak error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('TTS Error: ${e.toString()}'),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() {
@@ -91,9 +111,9 @@ class _NarrateSettingsState extends ConsumerState<NarrateSettings>
 
   OnlineTtsBackend? _getBackend(String id) {
     if (id == 'azure') return AzureTtsBackend();
+    if (id == 'openai') return OpenaiTtsBackend();
     return null;
   }
-
   @override
   void initState() {
     super.initState();
@@ -339,7 +359,25 @@ class _NarrateSettingsState extends ConsumerState<NarrateSettings>
 
         // Voice List Section - Inlined
         SettingsSection(
-          title: Text(L10n.of(context).settingsNarrateTtsVoiceModels),
+          title: Row(
+            children: [
+              Text(L10n.of(context).settingsNarrateTtsVoiceModels),
+              const Spacer(),
+              if (_showVoiceList)
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  tooltip: 'Refresh voice list',
+                  onPressed: () async {
+                    await ref.refresh(ttsVoicesProvider.future);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Voice list refreshed')),
+                      );
+                    }
+                  },
+                ),
+            ],
+          ),
           tiles: [
             CustomSettingsTile(
               child: _showVoiceList
@@ -402,6 +440,9 @@ class _NarrateSettingsState extends ConsumerState<NarrateSettings>
           DropdownMenuItem(
               value: 'azure',
               child: Text(L10n.of(context).settingsNarrateAzureTts)),
+          DropdownMenuItem(
+              value: 'openai',
+              child: Text('OpenAI TTS')),
         ],
         onChanged: (value) async {
           if (value != null && value != currentServiceId) {
@@ -450,12 +491,16 @@ class _NarrateSettingsState extends ConsumerState<NarrateSettings>
           ),
           const SizedBox(height: 20),
           ...backend.configFields.map((field) {
+            // Special handling for 'model' field for OpenAI TTS
+            if (serviceId == 'openai' && field == 'model') {
+              return _buildModelSelector(serviceId, config);
+            }
+            
             return Padding(
               padding: const EdgeInsets.only(bottom: 8.0),
-              child: TextField(
-                controller: TextEditingController(text: config[field])
-                  ..selection = TextSelection.collapsed(
-                      offset: config[field]?.length ?? 0),
+              child: TextFormField(
+                key: ValueKey('${serviceId}_$field'),
+                initialValue: config[field] ?? '',
                 decoration: InputDecoration(
                   labelText: field.toUpperCase(),
                   border: const OutlineInputBorder(),
@@ -468,6 +513,89 @@ class _NarrateSettingsState extends ConsumerState<NarrateSettings>
               ),
             );
           }),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModelSelector(String serviceId, Map<String, String> config) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: TextFormField(
+                  key: ValueKey('${serviceId}_model'),
+                  initialValue: config['model'] ?? 'tts-1',
+                  decoration: const InputDecoration(
+                    labelText: 'MODEL',
+                    border: OutlineInputBorder(),
+                    helperText: 'Enter model name or select from list',
+                  ),
+                  onChanged: (value) {
+                    ref
+                        .read(onlineTtsConfigProvider(serviceId).notifier)
+                        .updateConfig('model', value);
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.refresh),
+                tooltip: 'Fetch models from API',
+                onPressed: () async {
+                  final backend = _getBackend(serviceId);
+                  if (backend is OpenaiTtsBackend) {
+                    try {
+                      final models = await backend.getModels();
+                      if (models.isNotEmpty && mounted) {
+                        showDialog(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: const Text('Select Model'),
+                            content: SizedBox(
+                              width: double.maxFinite,
+                              child: ListView.builder(
+                                shrinkWrap: true,
+                                itemCount: models.length,
+                                itemBuilder: (context, index) {
+                                  final model = models[index];
+                                  return ListTile(
+                                    title: Text(model),
+                                    onTap: () {
+                                      ref
+                                          .read(onlineTtsConfigProvider(serviceId).notifier)
+                                          .updateConfig('model', model);
+                                      Navigator.of(context).pop();
+                                    },
+                                  );
+                                },
+                              ),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.of(context).pop(),
+                                child: const Text('Cancel'),
+                              ),
+                            ],
+                          ),
+                        );
+                      }
+                    } catch (e) {
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Failed to fetch models: $e')),
+                        );
+                      }
+                    }
+                  }
+                },
+              ),
+            ],
+          ),
         ],
       ),
     );
