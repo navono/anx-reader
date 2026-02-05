@@ -32,23 +32,28 @@ class OpenaiTtsBackend extends OnlineTtsBackend {
       'https://platform.openai.com/docs/guides/text-to-speech';
 
   @override
-  List<String> get configFields => ['api_url', 'api_key', 'model', 'models_url', 'voices_url'];
+  List<String> get configFields => ['api_url', 'api_key', 'model', 'models_url', 'voices_url', 'instruct'];
 
   @override
   Future<Uint8List> speak(
       String text, String voice, double rate, double pitch) async {
-    AnxLog.info('OpenAI TTS: Starting speak request');
-    AnxLog.info('OpenAI TTS: Text: $text');
-    AnxLog.info('OpenAI TTS: Voice: $voice');
-    
-    // Get TTS-specific config
+    // Get TTS-specific config first
     final config = Prefs().getOnlineTtsConfig(serviceId);
-    String? apiUrl = config['api_url'];
-    String? apiKey = config['api_key'];
-    String? model = config['model'];
+    String? apiUrl = config['api_url']?.trim();
+    String? apiKey = config['api_key']?.trim();
+    String? model = config['model']?.trim();
+    String? instruct = config['instruct']?.trim();
 
-    AnxLog.info('OpenAI TTS: Config - API URL: $apiUrl');
-    AnxLog.info('OpenAI TTS: Config - Model: $model');
+    AnxLog.info('OpenAI TTS: ========== CONFIG ==========');
+    AnxLog.info('OpenAI TTS: API URL: $apiUrl');
+    AnxLog.info('OpenAI TTS: API Key: ${apiKey?.substring(0, 8)}...');
+    AnxLog.info('OpenAI TTS: Model: $model');
+    AnxLog.info('OpenAI TTS: Voice: $voice');
+    if (instruct != null && instruct.isNotEmpty) {
+      AnxLog.info('OpenAI TTS: Instruct: $instruct');
+    }
+    AnxLog.info('OpenAI TTS: Text: $text');
+    AnxLog.info('OpenAI TTS: ================================');
 
     // Default to OpenAI official endpoint if not configured
     if (apiUrl == null || apiUrl.isEmpty) {
@@ -73,52 +78,77 @@ class OpenaiTtsBackend extends OnlineTtsBackend {
       'model': model?.isNotEmpty == true ? model : 'tts-1',
       'input': text,
       'voice': voice,
-      'response_format': 'mp3',
     };
+
+    // Add instruct parameter if configured
+    if (instruct != null && instruct.isNotEmpty) {
+      requestBody['instruct'] = instruct;
+    }
+    
+    // Note: response_format is optional and not all services support it
+    // Removed to maximize compatibility with custom TTS backends
 
     final headers = {
       'Authorization': 'Bearer $apiKey',
       'Content-Type': 'application/json',
     };
 
-    AnxLog.info('OpenAI TTS: ========== REQUEST ==========');
-    AnxLog.info('OpenAI TTS: Method: POST');
+    AnxLog.info('OpenAI TTS: ========== SENDING REQUEST ==========');
     AnxLog.info('OpenAI TTS: URL: $apiUrl');
     AnxLog.info('OpenAI TTS: Headers: ${jsonEncode(headers)}');
     AnxLog.info('OpenAI TTS: Body: ${jsonEncode(requestBody)}');
-    AnxLog.info('OpenAI TTS: ================================');
+    AnxLog.info('OpenAI TTS: ======================================');
 
     // Note: OpenAI TTS API does not support rate or pitch parameters
     // These parameters are ignored by the API
+
     final response = await http.post(
       Uri.parse(apiUrl),
       headers: headers,
       body: jsonEncode(requestBody),
     );
 
-    AnxLog.info('OpenAI TTS: Response status: ${response.statusCode}');
-    AnxLog.info('OpenAI TTS: Response length: ${response.bodyBytes.length} bytes');
-
+    AnxLog.info('OpenAI TTS: ========== RESPONSE ==========');
+    AnxLog.info('OpenAI TTS: Status: ${response.statusCode}');
+    AnxLog.info('OpenAI TTS: Headers: ${response.headers}');
+    AnxLog.info('OpenAI TTS: Body length: ${response.bodyBytes.length} bytes');
+    
     if (response.statusCode == 200) {
-      AnxLog.info('OpenAI TTS: Success!');
+      AnxLog.info('OpenAI TTS: Success! Audio size: ${response.bodyBytes.length} bytes');
+      AnxLog.info('OpenAI TTS: ======================================');
       return response.bodyBytes;
     } else {
-      AnxLog.severe('OpenAI TTS: ERROR: ${response.statusCode} - ${response.body}');
+      // Try to decode response body for error details
+      String errorBody = response.body;
+      try {
+        if (response.bodyBytes.isNotEmpty) {
+          errorBody = utf8.decode(response.bodyBytes);
+        }
+      } catch (e) {
+        errorBody = 'Unable to decode response body: ${response.bodyBytes.length} bytes';
+      }
+      
+      AnxLog.severe('OpenAI TTS: ========== ERROR ==========');
+      AnxLog.severe('OpenAI TTS: Status: ${response.statusCode}');
+      AnxLog.severe('OpenAI TTS: Error body: $errorBody');
+      AnxLog.severe('OpenAI TTS: Request was: ${jsonEncode(requestBody)}');
+      AnxLog.severe('OpenAI TTS: ======================================');
+      
       throw Exception(
-          'OpenAI TTS API error: ${response.statusCode} - ${response.body}');
+          'OpenAI TTS API error: ${response.statusCode} - $errorBody');
     }
   }
 
   /// Get available TTS models from API endpoint
   Future<List<String>> getModels() async {
     final config = Prefs().getOnlineTtsConfig(serviceId);
-    String? apiUrl = config['api_url'];
-    String? apiKey = config['api_key'];
+    String? apiUrl = config['api_url']?.trim();
+    String? apiKey = config['api_key']?.trim();
 
     // Fallback to AI config
     if (apiKey == null || apiKey.isEmpty) {
       final aiConfig = Prefs().getAiConfig('openai');
-      apiKey = aiConfig['api_key'];
+      apiKey = aiConfig['api_key']?.trim();
     }
 
     if (apiKey == null || apiKey.isEmpty) {
@@ -128,36 +158,67 @@ class OpenaiTtsBackend extends OnlineTtsBackend {
     // Build models endpoint URL
     String modelsUrl;
     // Check if custom models_url is configured
-    String? customModelsUrl = config['models_url'];
+    String? customModelsUrl = config['models_url']?.trim();
     if (customModelsUrl != null && customModelsUrl.isNotEmpty) {
       modelsUrl = customModelsUrl;
     } else if (apiUrl != null && apiUrl.isNotEmpty) {
-      // Replace /v1/audio/speech with /v1/audio/models
-      modelsUrl = apiUrl.replaceAll('/v1/audio/speech', '/v1/audio/models');
+      // Try /v1/models first (some services use this endpoint)
+      modelsUrl = apiUrl.replaceAll(RegExp(r'/v1/audio/speech|/v1/audio/speech$'), '/v1/models');
+      // If no match, try replacing /v1/audio/speech with /v1/audio/models
+      if (modelsUrl == apiUrl) {
+        modelsUrl = apiUrl.replaceAll('/v1/audio/speech', '/v1/audio/models');
+      }
     } else {
-      modelsUrl = 'https://api.openai.com/v1/audio/models';
+      modelsUrl = 'https://api.openai.com/v1/models';
     }
 
-    try {
-      final response = await http.get(
-        Uri.parse(modelsUrl),
-        headers: {
-          'Authorization': 'Bearer $apiKey',
-          'Content-Type': 'application/json',
-        },
-      );
+    // Try multiple endpoints for model discovery
+    final endpointsToTry = <String>[
+      modelsUrl,
+      // Fallback to /v1/audio/models if /v1/models doesn't work
+      if (apiUrl != null && apiUrl.isNotEmpty)
+        apiUrl.replaceAll('/v1/audio/speech', '/v1/audio/models'),
+      'https://api.openai.com/v1/models',
+    ];
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data['data'] is List) {
-          return (data['data'] as List)
-              .map((m) => m['id']?.toString() ?? '')
-              .where((id) => id.isNotEmpty)
-              .toList();
+    for (final url in endpointsToTry) {
+      try {
+        AnxLog.info('OpenAI TTS: Trying models endpoint: $url');
+        final response = await http.get(
+          Uri.parse(url),
+          headers: {
+            'Authorization': 'Bearer $apiKey',
+            'Content-Type': 'application/json',
+          },
+        ).timeout(const Duration(seconds: 10));
+
+        AnxLog.info('OpenAI TTS: Models endpoint response: ${response.statusCode}');
+        if (response.statusCode == 200) {
+          AnxLog.info('OpenAI TTS: Models response body: ${response.body}');
+          final data = jsonDecode(response.body);
+          // Support multiple response formats
+          List<dynamic>? modelsList;
+          if (data['data'] is List) {
+            modelsList = data['data'] as List;
+          } else if (data['models'] is List) {
+            modelsList = data['models'] as List;
+          }
+
+          if (modelsList != null && modelsList.isNotEmpty) {
+            final models = modelsList
+                .map((m) => m['id']?.toString() ?? '')
+                .where((id) => id.isNotEmpty)
+                .toList();
+            if (models.isNotEmpty) {
+              AnxLog.info('OpenAI TTS: Found ${models.length} models from $url: $models');
+              return models;
+            }
+          }
         }
+      } catch (e) {
+        AnxLog.warning('OpenAI TTS: Failed to get models from $url: $e');
+        continue;
       }
-    } catch (e) {
-      // Fallback to defaults on error
     }
 
     return ['tts-1', 'tts-1-hd'];

@@ -207,20 +207,37 @@ class WebdavClient extends SyncClientBase {
     void Function(int sent, int total)? onProgress,
     CancelToken? cancelToken,
   }) async {
+    // 检查本地文件是否存在
+    final localFile = io.File(localPath);
+    if (!await localFile.exists()) {
+      throw Exception('Local file does not exist: $localPath');
+    }
+    
+    final fileSize = await localFile.length();
+    AnxLog.info('Uploading file: $localPath (${fileSize} bytes) to $remotePath');
+
     if (replace) {
       try {
         await remove(_safeEncodePath(remotePath));
+        AnxLog.info('Removed existing file: $remotePath');
       } catch (e) {
-        AnxLog.severe('Failed to remove file\n$e');
+        AnxLog.warning('Failed to remove file (may not exist): $e');
       }
     }
 
-    await _client.writeFromFile(
-      localPath,
-      _safeEncodePath(remotePath),
-      onProgress: onProgress,
-      cancelToken: cancelToken,
-    );
+    try {
+      AnxLog.info('Starting writeFromFile to ${_safeEncodePath(remotePath)}');
+      await _client.writeFromFile(
+        localPath,
+        _safeEncodePath(remotePath),
+        onProgress: onProgress,
+        cancelToken: cancelToken,
+      );
+      AnxLog.info('Successfully uploaded file: $remotePath');
+    } catch (e) {
+      AnxLog.severe('writeFromFile failed: $e');
+      rethrow;
+    }
   }
 
   @override
